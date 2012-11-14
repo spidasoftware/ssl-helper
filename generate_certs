@@ -1,0 +1,149 @@
+#!/usr/bin/env groovy
+
+import java.security.*
+import sun.misc.BASE64Encoder
+
+if(this.args.size()>0 && this.args[0]=="usage"){
+  println "This script doesn't need any parameters, it queries you for inputs and has some SPIDA defaults."
+  println "  example: './generate_certs'"
+  println "  note: you might need to add an +x to this script and you need groovy on your path."
+  return
+}else if(this.args.size()>0){
+  println "Unknown argument."
+  println "  './generate_certs usage'"
+  return
+}
+
+def password = "changeit"
+def name = "tomcat"
+def address = "localhost"
+def company = "COMPANY"
+def org = "COMPANY DEPT"
+def state = "OH"
+def city = "CITY"
+def country = "US"
+
+def console = System.console()
+if (console) {
+    def response = console.readLine('> Enter an name to use for alias, keystore, and certificate names (DEFAULT: tomcat): ')
+    name = response=="" ? name : response
+    
+    response = console.readLine('> Please enter your password to use (changeit): ') 
+    password = response=="" ? password : response
+    if(password.length()<6){
+      println "Password must be 6 characters"
+      return
+    }
+    
+    response = console.readLine("> Enter your website (${address}): ")
+    address = response=="" ? address : response
+    
+    response = console.readLine("> Enter your organization name (${company}): ")
+    company = response=="" ? company : response
+    
+    response = console.readLine("> Enter your sub-organization name (${org}:) ")
+    org = response=="" ? org : response
+    
+    response = console.readLine("> Enter your city (${city}): ")
+    city = response=="" ? city : response
+    
+    response = console.readLine("> Enter your state (${state}): ")
+    state = response=="" ? state : response
+    
+    response = console.readLine("> Enter your country (${country}): ")
+    country = response=="" ? country : response
+
+    def commandsToRun = ["mkdir ${name}_ssl\n"]
+    commandsToRun.add "cd ${name}_ssl\n"
+    //First generate the java key store certificate, this is a DEM format.
+    commandsToRun.add 'keytool -genkey -alias '+name+' -keyalg RSA -keystore '+ name +'.jks -dname "cn='+address+", ou="+org+", o="+company+", c="+country+", s="+state+", l="+city+'"' + " -keypass ${password} -storepass ${password} -validity 730\n"
+
+    //Second export the key
+    commandsToRun.add "keytool -export -alias ${name} -keystore ${name}.jks -file ${name}-der.crt -storepass ${password}\n"
+
+    //Also generate the Certificate Signing Request for good measure
+    commandsToRun.add "keytool -certreq -alias ${name} -keystore ${name}.jks -storepass ${password} -file ${name}.csr\n"
+
+    //Third is to convert to PEM for apache
+    commandsToRun.add "openssl x509 -in ${name}-der.crt -inform DER -out ${name}-pem.crt -outform PEM\n"
+
+    def scriptFile = new File("cert_gen_${name}.sh")
+    for(c in commandsToRun){
+      scriptFile.append c
+    }
+    
+    def process = "sh cert_gen_${name}.sh".execute()
+    process.waitFor()
+    scriptFile.delete()
+
+    exportPrivateKey(name, password)
+    
+    //Forth combine and make complete cert
+    scriptFile = new File("cert_gen_${name}.sh")
+    scriptFile.append "openssl rsa -in ${name}_ssl/${name}-key-pem.crt -out ${name}_ssl/${name}-combo-pem.crt"    
+    process = "sh cert_gen_${name}.sh".execute()
+    process.waitFor()
+    scriptFile.delete()
+    
+    //Combine the private and certificate into a file
+    def comboFile = new File("${name}_ssl/${name}-combo-pem.crt")
+    def keyText = comboFile.text
+    def comboText = keyText + (new File("${name}_ssl/${name}-pem.crt").text)
+    comboFile.text = comboText
+    new File("${name}_ssl/${name}-key-pem.crt").text = keyText
+
+    //Generate a README.txt to tell you where everything can be used.
+    def readMe = new File("${name}_ssl/README.txt")
+    readMe.text = """
+
+    This configuration assumes you copy the this generate folder to the server at : /var/lib/spida/${name}_ssl
+
+    The ${name}.jks is a java keystore file and can be used as the keystore to enable SSL in tomcat.  The alias name used was ${name}.
+    
+        <Connector port="8443" protocol="HTTP/1.1" SSLEnabled="true"
+        maxThreads="150" scheme="https" secure="true"
+        clientAuth="false" sslProtocol="TLS"
+        ciphers="SSL_RSA_WITH_RC4_128_SHA" 
+        keystorePass="${password}" keystoreFile="/var/lib/spida/${name}_ssl/${name}.jks" />
+
+    The ${name}-der.crt file is a DER certificate and can be imported into your java base trust store.
+    
+        keytool -import -alias ${name} -file ${name}-der.crt -keystore \$JAVA_HOME/jre/lib/security/cacerts
+
+    The ${name}-pem.crt file is a PEM certificate and can be used in Apache HTTPD for exposing or trusting. The following is some example configuration.
+
+        SSLEngine on
+
+        SSLCipherSuite ALL:!ADH:!EXP56:RC4+RSA:+HIGH:+MEDIUM:+LOW:+SSLv2:+EXP:+eNULL 
+
+        SSLCertificateFile "/var/lib/spida/${name}_ssl/${name}-pem.crt"
+        SSLCertificateKeyFile "/var/lib/spida/${name}_ssl/${name}-key-pem.crt"
+
+        SSLProxyEngine on
+        SSLProxyMachineCertificateFile "/var/lib/spida/${name}_ssl/${name}-combo-pem.crt"
+    """
+
+    println "Finished generating certificates and documentation"
+} else {
+  logger.error "Cannot get console."
+}
+
+private exportPrivateKey(String name, String password) {
+    def keystoreFile = new File(name+"_ssl/"+name+".jks");
+    
+    // The source keystore is a Java Key Store (JKS).
+    KeyStore keystore = KeyStore.getInstance( "jks");
+    keystore.load( new FileInputStream( keystoreFile),
+             password.toCharArray());
+    // Get the key.
+    Key key = keystore.getKey( name, password.toCharArray());
+    // Convert to the PEM format.
+    String encoded = new BASE64Encoder().encode( key.getEncoded());
+    def output = ""
+    output += "-----BEGIN PRIVATE KEY-----\n"
+    output+= encoded
+    output+= "\n-----END PRIVATE KEY-----\n"
+    def outputFile = new File(name+"_ssl/"+name+"-key-pem.crt")
+    outputFile.text = output.toString()
+  }
+
