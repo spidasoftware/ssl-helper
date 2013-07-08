@@ -19,7 +19,7 @@ def name = "tomcat"
 def address = "localhost"
 def company = "COMPANY"
 def org = "COMPANY DEPT"
-def state = "OH"
+def state = "Ohio"
 def city = "CITY"
 def country = "US"
 
@@ -56,7 +56,7 @@ if (console) {
     def commandsToRun = ["mkdir ${name}_ssl\n"]
     commandsToRun.add "cd ${name}_ssl\n"
     //First generate the java key store certificate, this is a DEM format.
-    commandsToRun.add 'keytool -genkey -alias '+name+' -keyalg RSA -keystore '+ name +'.jks -dname "cn='+address+", ou="+org+", o="+company+", c="+country+", s="+state+", l="+city+'"' + " -keypass ${password} -storepass ${password} -validity 730\n"
+    commandsToRun.add 'keytool -genkey -keysize 4096 -alias '+name+' -keyalg RSA -keystore '+ name +'.jks -dname "cn='+address+", ou="+org+", o="+company+", c="+country+", s="+state+", l="+city+'"' + " -keypass ${password} -storepass ${password} -validity 730\n"
 
     //Second export the key
     commandsToRun.add "keytool -export -alias ${name} -keystore ${name}.jks -file ${name}-der.crt -storepass ${password}\n"
